@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import ControlsPanel from '@/components/ControlsPanel';
 import ElevationProfile from '@/components/ElevationProfile';
+import StartPointSearch from '@/components/StartPointSearch';
 import { ATHLETE_PROFILE_SOURCE, DEFAULT_ATHLETE_PROFILE } from '@/lib/athleteProfile';
 import { downloadGpx } from '@/lib/gpx';
-import { estimateRideDistanceKm } from '@/lib/speedModel';
+import { estimateRideDistanceKm, estimateSpeedKmh } from '@/lib/speedModel';
 import type { CyclingProfile, GeneratedRoute } from '@/lib/types';
 
 const RouteMap = dynamic(() => import('@/components/RouteMap'), { ssr: false });
@@ -19,6 +20,7 @@ export default function Home() {
   const [maxElevationM, setMaxElevationM] = useState(400);
   const [speedKmh, setSpeedKmh] = useState(DEFAULT_ATHLETE_PROFILE.flatSpeedKmh);
   const [profile, setProfile] = useState<CyclingProfile>('cycling-regular');
+  const [avoidRoughSurfaces, setAvoidRoughSurfaces] = useState(false);
   const [route, setRoute] = useState<GeneratedRoute | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +42,11 @@ export default function Home() {
     return estimateRideDistanceKm(athleteProfile, durationMin / 60, maxElevationM);
   }, [speedKmh, durationMin, maxElevationM]);
 
+  const adjustedSpeedKmh = useMemo(() => {
+    const athleteProfile = { ...DEFAULT_ATHLETE_PROFILE, flatSpeedKmh: speedKmh };
+    return estimateSpeedKmh(athleteProfile, maxElevationM, estimatedDistanceKm);
+  }, [speedKmh, maxElevationM, estimatedDistanceKm]);
+
   async function generate() {
     if (!start) return;
     setLoading(true);
@@ -54,6 +61,7 @@ export default function Home() {
           targetDistanceKm: estimatedDistanceKm,
           maxElevationM,
           profile,
+          avoidRoughSurfaces,
         }),
       });
       const data = await res.json();
@@ -77,10 +85,13 @@ export default function Home() {
     <main className="flex flex-col md:flex-row h-screen">
       <div className="md:w-96 w-full p-4 overflow-y-auto border-r border-slate-200 bg-white">
         <h1 className="text-xl font-bold mb-1">VeloRoute AI</h1>
-        <p className="text-sm text-slate-500 mb-4">
+        <p className="text-sm text-slate-600 mb-4">
           Vitesse de base calibrée sur tes {ATHLETE_PROFILE_SOURCE.rideCount} dernières sorties Strava (~
           {ATHLETE_PROFILE_SOURCE.recentWeightedAvgSpeedKmh} km/h de moyenne).
         </p>
+        <div className="mb-5">
+          <StartPointSearch start={start} onSelect={(lat, lng) => setStart({ lat, lng })} />
+        </div>
         <ControlsPanel
           durationMin={durationMin}
           onDurationChange={setDurationMin}
@@ -90,7 +101,10 @@ export default function Home() {
           onSpeedChange={setSpeedKmh}
           profile={profile}
           onProfileChange={setProfile}
+          avoidRoughSurfaces={avoidRoughSurfaces}
+          onAvoidRoughSurfacesChange={setAvoidRoughSurfaces}
           estimatedDistanceKm={estimatedDistanceKm}
+          adjustedSpeedKmh={adjustedSpeedKmh}
           onGenerate={generate}
           onRegenerate={generate}
           hasRoute={route !== null}
@@ -101,14 +115,21 @@ export default function Home() {
           <div className="mt-4 space-y-3">
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="bg-slate-50 rounded p-2">
-                <div className="text-slate-500">Distance réelle</div>
+                <div className="text-slate-600">Distance réelle</div>
                 <div className="font-semibold">{route.distanceKm.toFixed(1)} km</div>
               </div>
               <div className="bg-slate-50 rounded p-2">
-                <div className="text-slate-500">D+ réel</div>
+                <div className="text-slate-600">D+ réel</div>
                 <div className="font-semibold">{route.ascentM} m</div>
               </div>
             </div>
+            {avoidRoughSurfaces && (
+              <p className="text-sm text-slate-600">
+                {route.strictSurfaceApplied
+                  ? '✓ Filtre revêtement asphalté appliqué.'
+                  : "⚠️ Aucune boucle asphaltée trouvée ici : filtre revêtement ignoré pour ce résultat."}
+              </p>
+            )}
             <ElevationProfile points={route.points} />
             <button
               onClick={handleExport}

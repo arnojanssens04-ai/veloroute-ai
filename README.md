@@ -63,22 +63,35 @@ clique sur « Générer mon parcours ».
 
 ## Préférence pour les infrastructures cyclables
 
-Toutes les boucles évitent les grands axes routiers (`avoid_features:
-highways`). Le profil « Polyvalent » (`cycling-regular`) va plus loin : c'est
-le profil qu'OpenRouteService construit spécifiquement pour privilégier les
+Le profil « Polyvalent » (`cycling-regular`, par défaut) est celui
+qu'OpenRouteService construit spécifiquement pour privilégier les
 pistes/bandes cyclables et les routes calmes quand une alternative
 raisonnable existe, au prix d'un tracé parfois moins direct. Le profil
 « Vélo de route » (`cycling-road`) reste optimisé pour l'itinéraire le plus
 direct sur route goudronnée, quitte à partager la chaussée avec les
 voitures.
 
+La case « Éviter pavés et chemins non asphaltés » ajoute une contrainte
+`profile_params.restrictions.surface_type: asphalt` à la requête ORS. C'est
+du *best-effort* : si aucune boucle purement asphaltée n'existe pour la
+distance demandée, l'appli repasse automatiquement sans cette contrainte
+plutôt que d'échouer, et te le signale sous les résultats.
+
 **Limite technique connue** : l'API publique d'OpenRouteService ne permet
 pas d'imposer une hiérarchie stricte du type « pistes 100% séparées d'abord,
-puis bandes cyclables, puis route partagée en dernier recours » — c'est une
-préférence globale du profil, pas un filtre par type d'infrastructure. Pour
-un contrôle aussi fin, il faudrait un moteur différent (ex. GraphHopper avec
-ses `custom_model`, ou un ORS auto-hébergé avec un profil sur mesure), ce
-qui demande une tout autre intégration.
+puis bandes cyclables, puis route partagée en dernier recours » — ce sont
+des préférences/contraintes globales du profil, pas un filtre par type
+d'infrastructure précis. Pour un contrôle aussi fin, il faudrait un moteur
+différent (ex. GraphHopper avec ses `custom_model`, disponibles uniquement
+sur un plan payant chez eux, ou un ORS auto-hébergé avec un profil sur
+mesure) — voir la discussion dans l'historique du projet.
+
+## Point de départ
+
+En plus de la géolocalisation automatique et du clic sur la carte, un champ
+de recherche d'adresse (`/api/geocode`, proxy vers l'API Geocoding
+d'OpenRouteService — utilise la même clé `ORS_API_KEY`) permet de saisir une
+adresse ou une ville directement.
 
 ## Envoyer le parcours vers Garmin Connect
 

@@ -19,6 +19,7 @@ export interface GeneratedRoute {
   ascentM: number;
   descentM: number;
   attempts: number;
+  strictSurfaceApplied: boolean;
 }
 
 export interface GenerateRouteRequest {
@@ -27,4 +28,11 @@ export interface GenerateRouteRequest {
   targetDistanceKm: number;
   maxElevationM: number;
   profile: CyclingProfile;
+  avoidRoughSurfaces: boolean;
+}
+
+export interface GeocodeResult {
+  label: string;
+  lat: number;
+  lng: number;
 }

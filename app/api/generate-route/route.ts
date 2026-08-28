@@ -10,6 +10,7 @@ interface RequestBody {
   targetDistanceKm: number;
   maxElevationM: number;
   profile: CyclingProfile;
+  avoidRoughSurfaces?: boolean;
 }
 
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -31,9 +32,30 @@ async function fetchRoundTrip(
   lng: number,
   distanceKm: number,
   seed: number,
-  attempt: number
+  attempt: number,
+  avoidRoughSurfaces: boolean
 ): Promise<GeneratedRoute> {
   const points = Math.min(10, Math.max(3, Math.round(distanceKm / 8)));
+
+  const options: Record<string, unknown> = {
+    round_trip: {
+      length: Math.round(distanceKm * 1000),
+      points,
+      seed,
+    },
+  };
+
+  // Restreint aux surfaces revêtues (asphalte/béton) — exclut pavés et
+  // chemins non asphaltés. Repose sur profile_params.restrictions, un champ
+  // documenté pour les profils cycling-*, mais que nous n'avons pas pu
+  // tester en direct : voir le repli dans POST() si ORS le rejette.
+  if (avoidRoughSurfaces) {
+    options.profile_params = {
+      restrictions: {
+        surface_type: 'asphalt',
+      },
+    };
+  }
 
   const res = await fetch(`${ORS_BASE_URL}/${profile}/geojson`, {
     method: 'POST',
@@ -44,13 +66,7 @@ async function fetchRoundTrip(
     body: JSON.stringify({
       coordinates: [[lng, lat]],
       elevation: true,
-      options: {
-        round_trip: {
-          length: Math.round(distanceKm * 1000),
-          points,
-          seed,
-        },
-      },
+      options,
     }),
   });
 
@@ -89,6 +105,7 @@ async function fetchRoundTrip(
     ascentM: Math.round(ascentM),
     descentM: Math.round(descentM),
     attempts: attempt,
+    strictSurfaceApplied: avoidRoughSurfaces,
   };
 }
 
@@ -103,6 +120,7 @@ export async function POST(req: NextRequest) {
 
   const body = (await req.json()) as RequestBody;
   const { lat, lng, targetDistanceKm, maxElevationM, profile } = body;
+  const wantsStrictSurface = body.avoidRoughSurfaces === true;
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) {
     return NextResponse.json({ error: 'Paramètres invalides.' }, { status: 400 });
@@ -111,14 +129,22 @@ export async function POST(req: NextRequest) {
   let best: GeneratedRoute | null = null;
   let bestScore = Infinity;
   let lastError = '';
+  let strictSurfaceRejected = false;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const seed = Math.floor(Math.random() * 1_000_000);
+    const useStrictSurface = wantsStrictSurface && !strictSurfaceRejected;
     let candidate: GeneratedRoute;
     try {
-      candidate = await fetchRoundTrip(apiKey, profile, lat, lng, targetDistanceKm, seed, attempt);
+      candidate = await fetchRoundTrip(apiKey, profile, lat, lng, targetDistanceKm, seed, attempt, useStrictSurface);
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
+      // Si ORS rejette le filtre de revêtement (paramètre non supporté sur ce
+      // profil, ou aucune boucle possible sous cette contrainte), on
+      // abandonne le filtre pour les tentatives suivantes plutôt que
+      // d'échouer complètement — mieux vaut une boucle sans garantie de
+      // revêtement qu'aucune boucle du tout.
+      if (useStrictSurface) strictSurfaceRejected = true;
       continue;
     }
 
