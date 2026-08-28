@@ -6,6 +6,7 @@ import ControlsPanel from '@/components/ControlsPanel';
 import ElevationProfile from '@/components/ElevationProfile';
 import StartPointSearch from '@/components/StartPointSearch';
 import { ATHLETE_PROFILE_SOURCE, DEFAULT_ATHLETE_PROFILE } from '@/lib/athleteProfile';
+import { bearingDegrees, haversineMeters } from '@/lib/geo';
 import { downloadGpx } from '@/lib/gpx';
 import { averageSpeedKmh, estimateRideDistanceKm } from '@/lib/speedModel';
 import type { CyclingProfile, GeneratedRoute } from '@/lib/types';
@@ -26,6 +27,12 @@ function windQualityLabel(windScore: number): string {
   return 'orientation neutre par rapport au vent';
 }
 
+function directionQualityLabel(directionScore: number): string {
+  if (directionScore > 0.7) return 'direction bien respectée';
+  if (directionScore > 0.3) return 'direction partiellement respectée';
+  return 'peu de boucles allaient dans cette direction ici';
+}
+
 export default function Home() {
   const [start, setStart] = useState<{ lat: number; lng: number } | null>(null);
   const [durationMin, setDurationMin] = useState(90);
@@ -34,6 +41,8 @@ export default function Home() {
   const [profile, setProfile] = useState<CyclingProfile>('cycling-regular');
   const [avoidRoughSurfaces, setAvoidRoughSurfaces] = useState(false);
   const [optimizeForWind, setOptimizeForWind] = useState(false);
+  const [aimPoint, setAimPoint] = useState<{ lat: number; lng: number } | null>(null);
+  const [awaitingAimClick, setAwaitingAimClick] = useState(false);
   const [route, setRoute] = useState<GeneratedRoute | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +68,22 @@ export default function Home() {
     return averageSpeedKmh(estimatedDistanceKm, durationMin / 60);
   }, [estimatedDistanceKm, durationMin]);
 
+  const aimInfo = useMemo(() => {
+    if (!start || !aimPoint) return null;
+    const bearing = bearingDegrees(start.lat, start.lng, aimPoint.lat, aimPoint.lng);
+    const distanceKm = haversineMeters(start.lat, start.lng, aimPoint.lat, aimPoint.lng) / 1000;
+    return { bearing, distanceKm };
+  }, [start, aimPoint]);
+
+  function handleMapClick(lat: number, lng: number) {
+    if (awaitingAimClick) {
+      setAimPoint({ lat, lng });
+      setAwaitingAimClick(false);
+    } else {
+      setStart({ lat, lng });
+    }
+  }
+
   async function generate() {
     if (!start) return;
     setLoading(true);
@@ -75,6 +100,7 @@ export default function Home() {
           profile,
           avoidRoughSurfaces,
           optimizeForWind,
+          ...(aimPoint ? { aimLat: aimPoint.lat, aimLng: aimPoint.lng } : {}),
         }),
       });
       const data = await res.json();
@@ -104,6 +130,33 @@ export default function Home() {
         </p>
         <div className="mb-5">
           <StartPointSearch start={start} onSelect={(lat, lng) => setStart({ lat, lng })} />
+        </div>
+        <div className="mb-5">
+          <label className="block text-sm font-medium mb-1">Direction souhaitée (optionnel)</label>
+          {aimPoint && aimInfo ? (
+            <div className="flex items-center justify-between gap-2 text-sm bg-purple-50 text-purple-900 rounded-lg px-3 py-2">
+              <span>
+                🧭 Vers le {compassLabel(aimInfo.bearing)}, à {aimInfo.distanceKm.toFixed(1)} km du départ
+              </span>
+              <button
+                onClick={() => setAimPoint(null)}
+                className="shrink-0 text-purple-700 hover:underline"
+              >
+                Effacer
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAwaitingAimClick(true)}
+              className={`w-full border rounded-lg px-3 py-2 text-sm font-medium ${
+                awaitingAimClick
+                  ? 'border-purple-500 bg-purple-50 text-purple-700'
+                  : 'border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              {awaitingAimClick ? 'Clique sur la carte pour indiquer une direction…' : '🧭 Choisir une direction sur la carte'}
+            </button>
+          )}
         </div>
         <ControlsPanel
           durationMin={durationMin}
@@ -154,6 +207,9 @@ export default function Home() {
                   : "⚠️ Données de vent indisponibles pour ce résultat : orientation non optimisée."}
               </p>
             )}
+            {aimPoint && route.directionScore !== null && (
+              <p className="text-sm text-slate-600">🧭 {directionQualityLabel(route.directionScore)}.</p>
+            )}
             <ElevationProfile points={route.points} />
             <button
               onClick={handleExport}
@@ -166,7 +222,13 @@ export default function Home() {
       </div>
       <div className="flex-1 min-h-[300px]">
         {start ? (
-          <RouteMap start={start} onStartChange={(lat, lng) => setStart({ lat, lng })} route={route?.points ?? null} />
+          <RouteMap
+            start={start}
+            aimPoint={aimPoint}
+            awaitingAimClick={awaitingAimClick}
+            onMapClick={handleMapClick}
+            route={route?.points ?? null}
+          />
         ) : (
           <div className="h-full flex items-center justify-center text-slate-400">Localisation en cours…</div>
         )}

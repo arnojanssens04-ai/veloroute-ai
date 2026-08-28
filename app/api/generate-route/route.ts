@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { bearingDegrees, haversineMeters } from '@/lib/geo';
 import type { CyclingProfile, GeneratedRoute, RoutePoint, WindInfo } from '@/lib/types';
 
 const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions';
 const MAX_ATTEMPTS = 5;
 const WIND_WEIGHT = 2;
+const DIRECTION_WEIGHT = 3;
+const DIRECTION_FRACTION = 0.3;
 
 interface RequestBody {
   lat: number;
@@ -13,32 +16,11 @@ interface RequestBody {
   profile: CyclingProfile;
   avoidRoughSurfaces?: boolean;
   optimizeForWind?: boolean;
+  aimLat?: number;
+  aimLng?: number;
 }
 
-type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore'>;
-
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const φ1 = toRad(lat1);
-  const φ2 = toRad(lat2);
-  const Δλ = toRad(lng2 - lng1);
-  const y = Math.sin(Δλ) * Math.cos(φ2);
-  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-  const θ = (Math.atan2(y, x) * 180) / Math.PI;
-  return (θ + 360) % 360;
-}
+type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore'>;
 
 async function fetchWind(lat: number, lng: number): Promise<WindInfo | null> {
   try {
@@ -92,6 +74,37 @@ function computeWindScore(points: RoutePoint[], windDirectionFromDeg: number): n
   const avgFirst = firstDist > 0 ? firstWeighted / firstDist : 0;
   const avgSecond = secondDist > 0 ? secondWeighted / secondDist : 0;
   return avgFirst - avgSecond;
+}
+
+// Score une boucle par rapport à une direction souhaitée (le cap depuis le
+// départ vers un point cliqué sur la carte) : +1 quand le tout début du
+// parcours part plein cap vers ce point, -1 quand il part à l'opposé. On ne
+// regarde que la première fraction du trajet (par défaut 30%) — la "sortie"
+// — puisque c'est de là que vient "de quel côté je pars" ; le reste de la
+// boucle revient de toute façon vers le départ. Même logique que le vent :
+// ORS ne permet pas d'imposer un cap de départ, donc on choisit la moins
+// mauvaise option parmi des boucles déjà générées pour d'autres critères.
+function computeDirectionScore(points: RoutePoint[], desiredBearingDeg: number): number {
+  const totalKm = points[points.length - 1]?.distanceKm ?? 0;
+  if (totalKm <= 0) return 0;
+  const cutoffKm = totalKm * DIRECTION_FRACTION;
+
+  let weighted = 0;
+  let dist = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    if (prev.distanceKm >= cutoffKm) break;
+    const segmentKm = curr.distanceKm - prev.distanceKm;
+    if (segmentKm <= 0) continue;
+    const bearing = bearingDegrees(prev.lat, prev.lng, curr.lat, curr.lng);
+    const alignment = Math.cos(((bearing - desiredBearingDeg) * Math.PI) / 180);
+    weighted += alignment * segmentKm;
+    dist += segmentKm;
+  }
+
+  return dist > 0 ? weighted / dist : 0;
 }
 
 async function fetchRoundTrip(
@@ -191,16 +204,19 @@ export async function POST(req: NextRequest) {
   const { lat, lng, targetDistanceKm, maxElevationM, profile } = body;
   const wantsStrictSurface = body.avoidRoughSurfaces === true;
   const wantsWindOptimization = body.optimizeForWind === true;
+  const hasDirection = Number.isFinite(body.aimLat) && Number.isFinite(body.aimLng);
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) {
     return NextResponse.json({ error: 'Paramètres invalides.' }, { status: 400 });
   }
 
   const wind = wantsWindOptimization ? await fetchWind(lat, lng) : null;
+  const desiredBearing = hasDirection ? bearingDegrees(lat, lng, body.aimLat as number, body.aimLng as number) : null;
 
   let best: RouteCandidate | null = null;
   let bestScore = Infinity;
   let bestWindScore = -Infinity;
+  let bestDirectionScore = -Infinity;
   let lastError = '';
   let strictSurfaceRejected = false;
 
@@ -224,18 +240,20 @@ export async function POST(req: NextRequest) {
     const over = candidate.ascentM - maxElevationM;
     const elevationScore = over > 0 ? over * 3 : -over;
     const windScore = wind ? computeWindScore(candidate.points, wind.directionFromDeg) : 0;
-    const combinedScore = elevationScore - windScore * WIND_WEIGHT;
+    const directionScore = desiredBearing !== null ? computeDirectionScore(candidate.points, desiredBearing) : 0;
+    const combinedScore = elevationScore - windScore * WIND_WEIGHT - directionScore * DIRECTION_WEIGHT;
 
     if (combinedScore < bestScore) {
       best = candidate;
       bestScore = combinedScore;
       bestWindScore = windScore;
+      bestDirectionScore = directionScore;
     }
 
-    // Sans optimisation vent, un premier candidat qui respecte le D+ suffit.
-    // Avec optimisation vent, il faut comparer plusieurs candidats avant de
-    // choisir, donc pas d'arrêt anticipé.
-    if (!wind && candidate.ascentM <= maxElevationM) break;
+    // Sans vent ni direction à respecter, un premier candidat qui satisfait
+    // le D+ suffit. Dès qu'un de ces critères est actif, il faut comparer
+    // plusieurs candidats avant de choisir, donc pas d'arrêt anticipé.
+    if (!wind && !hasDirection && candidate.ascentM <= maxElevationM) break;
   }
 
   if (!best) {
@@ -249,6 +267,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result: GeneratedRoute = { ...best, wind, windScore: bestWindScore === -Infinity ? 0 : bestWindScore };
+  const result: GeneratedRoute = {
+    ...best,
+    wind,
+    windScore: bestWindScore === -Infinity ? 0 : bestWindScore,
+    directionScore: desiredBearing !== null ? (bestDirectionScore === -Infinity ? 0 : bestDirectionScore) : null,
+  };
   return NextResponse.json(result);
 }

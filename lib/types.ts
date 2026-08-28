@@ -26,6 +26,7 @@ export interface GeneratedRoute {
   strictSurfaceApplied: boolean;
   wind: WindInfo | null;
   windScore: number;
+  directionScore: number | null;
 }
 
 export interface GenerateRouteRequest {
@@ -36,6 +37,8 @@ export interface GenerateRouteRequest {
   profile: CyclingProfile;
   avoidRoughSurfaces: boolean;
   optimizeForWind: boolean;
+  aimLat?: number;
+  aimLng?: number;
 }
 
 export interface GeocodeResult {

@@ -110,6 +110,19 @@ de recherche d'adresse (`/api/geocode`, proxy vers l'API Geocoding
 d'OpenRouteService — utilise la même clé `ORS_API_KEY`) permet de saisir une
 adresse ou une ville directement.
 
+## Direction souhaitée
+
+Le bouton « 🧭 Choisir une direction sur la carte » arme un clic unique : le
+prochain clic sur la carte place un point de direction (marqueur boussole +
+ligne pointillée depuis le départ), puis repasse en mode normal (clic =
+déplacer le départ). Comme pour le vent, l'appli ne peut pas imposer un cap
+de départ à OpenRouteService — elle choisit, parmi les boucles déjà
+générées pour respecter le D+, celle dont le tout début du parcours (les
+premiers 30 % de la distance) part le plus possible vers ce point. « Effacer »
+retire la contrainte et revient à une boucle libre ; recliquer sur le
+bouton permet de changer le point à tout moment si le résultat ne convient
+pas.
+
 ## Optimisation vent (expérimental)
 
 La case « Optimiser pour le vent » interroge [Open-Meteo](https://open-meteo.com/)
