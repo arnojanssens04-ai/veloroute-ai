@@ -50,13 +50,13 @@ async function fetchRoundTrip(
           points,
           seed,
         },
-        avoid_features: ['highways'],
       },
     }),
   });
 
   if (!res.ok) {
-    throw new Error(`ORS ${res.status}`);
+    const detail = await res.text().catch(() => '');
+    throw new Error(`ORS ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
 
   const data = await res.json();
@@ -110,13 +110,15 @@ export async function POST(req: NextRequest) {
 
   let best: GeneratedRoute | null = null;
   let bestScore = Infinity;
+  let lastError = '';
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const seed = Math.floor(Math.random() * 1_000_000);
     let candidate: GeneratedRoute;
     try {
       candidate = await fetchRoundTrip(apiKey, profile, lat, lng, targetDistanceKm, seed, attempt);
-    } catch {
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
       continue;
     }
 
@@ -133,7 +135,11 @@ export async function POST(req: NextRequest) {
 
   if (!best) {
     return NextResponse.json(
-      { error: "Impossible de générer un itinéraire ici. Essaie un autre point de départ ou une autre distance." },
+      {
+        error: `Impossible de générer un itinéraire ici. Essaie un autre point de départ ou une autre distance.${
+          lastError ? ` (${lastError})` : ''
+        }`,
+      },
       { status: 502 }
     );
   }
