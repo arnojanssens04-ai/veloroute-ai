@@ -3,10 +3,13 @@ import { bearingDegrees, haversineMeters } from '@/lib/geo';
 import type { CyclingProfile, GeneratedRoute, RoutePoint, WindInfo } from '@/lib/types';
 
 const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions';
-const MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS = 8;
 const WIND_WEIGHT = 2;
 const DIRECTION_WEIGHT = 3;
 const DIRECTION_FRACTION = 0.3;
+const UTURN_TURN_THRESHOLD_DEG = 150;
+const UTURN_MIN_SEGMENT_M = 5;
+const UTURN_TOLERANCE_M = 150;
 
 interface RequestBody {
   lat: number;
@@ -20,7 +23,7 @@ interface RequestBody {
   aimLng?: number;
 }
 
-type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore'>;
+type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore' | 'uturnPenaltyM'>;
 
 async function fetchWind(lat: number, lng: number): Promise<WindInfo | null> {
   try {
@@ -105,6 +108,32 @@ function computeDirectionScore(points: RoutePoint[], desiredBearingDeg: number):
   }
 
   return dist > 0 ? weighted / dist : 0;
+}
+
+// Détecte les allers-retours (ORS génère parfois une impasse pour ajuster
+// la distance : le tracé remonte une petite route puis fait quasi demi-tour
+// dedans). Un retournement de cap > 150° entre deux segments non-négligeables
+// (≥5m, pour ignorer le bruit GPS) compte comme un aller-retour ; la
+// pénalité retenue est la longueur du plus court des deux segments
+// concernés, en mètres — comparable directement au dépassement de D+.
+function computeUTurnPenaltyMeters(points: RoutePoint[]): number {
+  let penaltyM = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+    const segIn = haversineMeters(prev.lat, prev.lng, curr.lat, curr.lng);
+    const segOut = haversineMeters(curr.lat, curr.lng, next.lat, next.lng);
+    if (segIn < UTURN_MIN_SEGMENT_M || segOut < UTURN_MIN_SEGMENT_M) continue;
+    const bearingIn = bearingDegrees(prev.lat, prev.lng, curr.lat, curr.lng);
+    const bearingOut = bearingDegrees(curr.lat, curr.lng, next.lat, next.lng);
+    let turn = Math.abs(bearingOut - bearingIn);
+    if (turn > 180) turn = 360 - turn;
+    if (turn > UTURN_TURN_THRESHOLD_DEG) {
+      penaltyM += Math.min(segIn, segOut);
+    }
+  }
+  return penaltyM;
 }
 
 async function fetchRoundTrip(
@@ -212,11 +241,26 @@ export async function POST(req: NextRequest) {
 
   const wind = wantsWindOptimization ? await fetchWind(lat, lng) : null;
   const desiredBearing = hasDirection ? bearingDegrees(lat, lng, body.aimLat as number, body.aimLng as number) : null;
+  const elevationToleranceM = Math.max(30, maxElevationM * 0.15);
 
-  let best: RouteCandidate | null = null;
-  let bestScore = Infinity;
-  let bestWindScore = -Infinity;
-  let bestDirectionScore = -Infinity;
+  // Sélection à paliers plutôt qu'un score unique : le D+ et les
+  // aller-retours sont des défauts de qualité mesurés en mètres (échelle
+  // commune), tandis que vent/direction sont de simples préférences
+  // (échelle -1..1). Les additionner dans un seul score mélangeait des
+  // grandeurs incomparables et le D+ finissait par écraser complètement la
+  // préférence de direction — d'où une boucle qui ignorait la direction
+  // demandée. On filtre d'abord sur la qualité (D+ + demi-tours), et on ne
+  // départage par vent/direction qu'entre candidats déjà propres.
+  let bestClean: RouteCandidate | null = null;
+  let bestCleanPreference = -Infinity;
+  let bestCleanWindScore = 0;
+  let bestCleanDirectionScore = 0;
+  let bestCleanUTurnM = 0;
+
+  let bestDirty: RouteCandidate | null = null;
+  let bestDirtyDefect = Infinity;
+  let bestDirtyUTurnM = 0;
+
   let lastError = '';
   let strictSurfaceRejected = false;
 
@@ -237,24 +281,36 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    const over = candidate.ascentM - maxElevationM;
-    const elevationScore = over > 0 ? over * 3 : -over;
-    const windScore = wind ? computeWindScore(candidate.points, wind.directionFromDeg) : 0;
-    const directionScore = desiredBearing !== null ? computeDirectionScore(candidate.points, desiredBearing) : 0;
-    const combinedScore = elevationScore - windScore * WIND_WEIGHT - directionScore * DIRECTION_WEIGHT;
+    const elevationOverM = Math.max(0, candidate.ascentM - maxElevationM);
+    const uturnM = computeUTurnPenaltyMeters(candidate.points);
+    const isClean = elevationOverM <= elevationToleranceM && uturnM <= UTURN_TOLERANCE_M;
 
-    if (combinedScore < bestScore) {
-      best = candidate;
-      bestScore = combinedScore;
-      bestWindScore = windScore;
-      bestDirectionScore = directionScore;
+    if (isClean) {
+      const windScore = wind ? computeWindScore(candidate.points, wind.directionFromDeg) : 0;
+      const directionScore = desiredBearing !== null ? computeDirectionScore(candidate.points, desiredBearing) : 0;
+      const preference = windScore * WIND_WEIGHT + directionScore * DIRECTION_WEIGHT;
+      if (preference > bestCleanPreference) {
+        bestClean = candidate;
+        bestCleanPreference = preference;
+        bestCleanWindScore = windScore;
+        bestCleanDirectionScore = directionScore;
+        bestCleanUTurnM = uturnM;
+      }
+      // Sans préférence vent/direction à départager, le premier candidat
+      // propre suffit. Sinon il faut en comparer plusieurs.
+      if (!wind && desiredBearing === null) break;
+    } else {
+      const defect = elevationOverM + uturnM;
+      if (defect < bestDirtyDefect) {
+        bestDirty = candidate;
+        bestDirtyDefect = defect;
+        bestDirtyUTurnM = uturnM;
+      }
     }
-
-    // Sans vent ni direction à respecter, un premier candidat qui satisfait
-    // le D+ suffit. Dès qu'un de ces critères est actif, il faut comparer
-    // plusieurs candidats avant de choisir, donc pas d'arrêt anticipé.
-    if (!wind && !hasDirection && candidate.ascentM <= maxElevationM) break;
   }
+
+  const best = bestClean ?? bestDirty;
+  const chosenUTurnM = bestClean ? bestCleanUTurnM : bestDirtyUTurnM;
 
   if (!best) {
     return NextResponse.json(
@@ -270,8 +326,9 @@ export async function POST(req: NextRequest) {
   const result: GeneratedRoute = {
     ...best,
     wind,
-    windScore: bestWindScore === -Infinity ? 0 : bestWindScore,
-    directionScore: desiredBearing !== null ? (bestDirectionScore === -Infinity ? 0 : bestDirectionScore) : null,
+    windScore: bestClean ? bestCleanWindScore : 0,
+    directionScore: desiredBearing !== null ? (bestClean ? bestCleanDirectionScore : 0) : null,
+    uturnPenaltyM: Math.round(chosenUTurnM),
   };
   return NextResponse.json(result);
 }

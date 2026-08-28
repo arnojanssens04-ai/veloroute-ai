@@ -210,6 +210,12 @@ export default function Home() {
             {aimPoint && route.directionScore !== null && (
               <p className="text-sm text-slate-600">🧭 {directionQualityLabel(route.directionScore)}.</p>
             )}
+            {route.uturnPenaltyM > 150 && (
+              <p className="text-sm text-amber-700">
+                ⚠️ Ce tracé contient un aller-retour sur une petite portion (~{route.uturnPenaltyM} m) — fréquent
+                dans les zones peu maillées. Essaie « Régénérer » pour tenter d&apos;en obtenir un sans.
+              </p>
+            )}
             <ElevationProfile points={route.points} />
             <button
               onClick={handleExport}

@@ -147,6 +147,29 @@ Sur une boucle très arrondie (peu allongée), l'effet est faible par nature.
 Si Open-Meteo est injoignable, la génération continue normalement sans
 optimisation vent (repli silencieux, signalé dans l'interface).
 
+## Sélection par paliers (D+, demi-tours, puis vent/direction)
+
+`app/api/generate-route/route.ts` génère jusqu'à 8 boucles candidates et les
+classe en deux tas plutôt qu'un score unique :
+
+1. **Propres** : D+ dans une tolérance raisonnable autour de la cible (15 %,
+   min. 30 m) **et** pas d'aller-retour détecté (voir ci-dessous). Le vent et
+   la direction souhaitée ne servent à départager que *parmi ce tas* — on ne
+   compare jamais un mètre de D+ à un score de vent, ce sont des échelles
+   incomparables. Une version précédente les additionnait dans un seul score
+   et le D+ écrasait systématiquement la préférence de direction, qui
+   n'avait alors aucun effet réel.
+2. **Dégradées** (si aucune boucle propre trouvée) : la moins mauvaise selon
+   D+ dépassé + longueur d'aller-retour, sans tenir compte du vent/direction
+   — la qualité de base prime sur les préférences quand il faut choisir.
+
+**Détection des allers-retours** : ORS génère parfois une impasse pour
+ajuster précisément la distance demandée (le tracé remonte une petite rue
+puis fait quasi demi-tour dedans). Un retournement de cap de plus de 150°
+entre deux segments non négligeables (≥5 m, pour ignorer le bruit GPS) est
+détecté comme tel ; la boucle choisie l'indique dans l'interface si elle en
+contient un malgré tout (aucune alternative propre trouvée en 8 essais).
+
 ## Envoyer le parcours vers Garmin Connect
 
 Le bouton « Télécharger le GPX » génère un fichier `.gpx` standard

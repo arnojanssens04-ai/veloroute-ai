@@ -27,6 +27,7 @@ export interface GeneratedRoute {
   wind: WindInfo | null;
   windScore: number;
   directionScore: number | null;
+  uturnPenaltyM: number;
 }
 
 export interface GenerateRouteRequest {
