@@ -28,6 +28,7 @@ export interface GeneratedRoute {
   windScore: number;
   directionScore: number | null;
   uturnPenaltyM: number;
+  refinedForTerrain: boolean;
 }
 
 export interface GenerateRouteRequest {
@@ -35,6 +36,8 @@ export interface GenerateRouteRequest {
   lng: number;
   targetDistanceKm: number;
   maxElevationM: number;
+  durationHours: number;
+  flatSpeedKmh: number;
   profile: CyclingProfile;
   avoidRoughSurfaces: boolean;
   optimizeForWind: boolean;

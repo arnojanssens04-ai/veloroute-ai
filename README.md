@@ -45,6 +45,26 @@ qu'après. Une fois la boucle générée, la distance et le D+ **réels** sont
 toujours affichés, donc l'écart éventuel reste visible et tu peux régénérer
 ou ajuster manuellement la vitesse si besoin.
 
+### D+ "maximum" ne veut pas dire D+ garanti
+
+Le curseur s'appelle **D+ maximum** — un plafond à ne pas dépasser, pas un
+D+ que la sortie va forcément atteindre. Mais au moment du calcul de
+distance, avant même de générer un tracé réel, l'appli ne connaît pas encore
+le relief du coin : elle suppose donc, par prudence, que la sortie grimpera
+la totalité du plafond demandé. Si le terrain autour du départ est en
+réalité bien plus plat (D+ max=650m demandé, mais aucune boucle du coin
+n'en a plus de 150m), cette hypothèse pessimiste raccourcit la distance
+pour rien.
+
+Pour corriger ça sans abandonner l'ajustement automatique (qui reste utile
+si le D+ demandé correspond à un vrai terrain vallonné) : après une première
+génération, si le D+ **réellement obtenu** est nettement en dessous du
+plafond (moins de 60 %), l'appli recalcule une distance plus généreuse à
+partir de ce D+ réel et retente une génération. Le résultat l'indique
+("↗️ Terrain moins pentu que le D+ maximum autorisé..."). Ce n'est qu'une
+seconde tentative (pas une boucle infinie) : sur un relief très irrégulier,
+un écart résiduel entre l'estimation et la réalité peut subsister.
+
 ## Prérequis : une clé OpenRouteService (gratuite)
 
 1. Crée un compte sur https://openrouteservice.org/dev/#/signup

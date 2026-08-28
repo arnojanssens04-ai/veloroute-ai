@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { DEFAULT_ATHLETE_PROFILE } from '@/lib/athleteProfile';
 import { bearingDegrees, haversineMeters } from '@/lib/geo';
+import { estimateRideDistanceKm } from '@/lib/speedModel';
 import type { CyclingProfile, GeneratedRoute, RoutePoint, WindInfo } from '@/lib/types';
 
 const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions';
@@ -10,12 +12,16 @@ const DIRECTION_FRACTION = 0.3;
 const UTURN_TURN_THRESHOLD_DEG = 150;
 const UTURN_MIN_SEGMENT_M = 5;
 const UTURN_TOLERANCE_M = 150;
+const REFINEMENT_ASCENT_RATIO = 0.6;
+const REFINEMENT_MIN_GAIN_RATIO = 1.1;
 
 interface RequestBody {
   lat: number;
   lng: number;
   targetDistanceKm: number;
   maxElevationM: number;
+  durationHours: number;
+  flatSpeedKmh: number;
   profile: CyclingProfile;
   avoidRoughSurfaces?: boolean;
   optimizeForWind?: boolean;
@@ -23,7 +29,16 @@ interface RequestBody {
   aimLng?: number;
 }
 
-type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore' | 'uturnPenaltyM'>;
+type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore' | 'uturnPenaltyM' | 'refinedForTerrain'>;
+
+interface SearchResult {
+  best: RouteCandidate | null;
+  isClean: boolean;
+  windScore: number;
+  directionScore: number;
+  uturnPenaltyM: number;
+  lastError: string;
+}
 
 async function fetchWind(lat: number, lng: number): Promise<WindInfo | null> {
   try {
@@ -159,7 +174,7 @@ async function fetchRoundTrip(
   // Restreint aux surfaces revêtues (asphalte/béton) — exclut pavés et
   // chemins non asphaltés. Repose sur profile_params.restrictions, un champ
   // documenté pour les profils cycling-*, mais que nous n'avons pas pu
-  // tester en direct : voir le repli dans POST() si ORS le rejette.
+  // tester en direct : voir le repli dans searchCandidates() si ORS le rejette.
   if (avoidRoughSurfaces) {
     options.profile_params = {
       restrictions: {
@@ -220,37 +235,27 @@ async function fetchRoundTrip(
   };
 }
 
-export async function POST(req: NextRequest) {
-  const apiKey = process.env.ORS_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: 'ORS_API_KEY manquante. Ajoute ta clé OpenRouteService dans .env.local (voir README).' },
-      { status: 500 }
-    );
-  }
-
-  const body = (await req.json()) as RequestBody;
-  const { lat, lng, targetDistanceKm, maxElevationM, profile } = body;
-  const wantsStrictSurface = body.avoidRoughSurfaces === true;
-  const wantsWindOptimization = body.optimizeForWind === true;
-  const hasDirection = Number.isFinite(body.aimLat) && Number.isFinite(body.aimLng);
-
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) {
-    return NextResponse.json({ error: 'Paramètres invalides.' }, { status: 400 });
-  }
-
-  const wind = wantsWindOptimization ? await fetchWind(lat, lng) : null;
-  const desiredBearing = hasDirection ? bearingDegrees(lat, lng, body.aimLat as number, body.aimLng as number) : null;
+// Génère jusqu'à MAX_ATTEMPTS boucles pour une distance cible donnée et
+// classe les résultats à paliers plutôt qu'avec un score unique : le D+ et
+// les aller-retours sont des défauts de qualité mesurés en mètres (échelle
+// commune), tandis que vent/direction sont de simples préférences (échelle
+// -1..1). Les additionner dans un seul score mélangeait des grandeurs
+// incomparables et le D+ finissait par écraser complètement la préférence
+// de direction. On filtre d'abord sur la qualité (D+ + demi-tours), et on
+// ne départage par vent/direction qu'entre candidats déjà propres.
+async function searchCandidates(
+  apiKey: string,
+  profile: CyclingProfile,
+  lat: number,
+  lng: number,
+  targetDistanceKm: number,
+  maxElevationM: number,
+  wantsStrictSurface: boolean,
+  wind: WindInfo | null,
+  desiredBearing: number | null
+): Promise<SearchResult> {
   const elevationToleranceM = Math.max(30, maxElevationM * 0.15);
 
-  // Sélection à paliers plutôt qu'un score unique : le D+ et les
-  // aller-retours sont des défauts de qualité mesurés en mètres (échelle
-  // commune), tandis que vent/direction sont de simples préférences
-  // (échelle -1..1). Les additionner dans un seul score mélangeait des
-  // grandeurs incomparables et le D+ finissait par écraser complètement la
-  // préférence de direction — d'où une boucle qui ignorait la direction
-  // demandée. On filtre d'abord sur la qualité (D+ + demi-tours), et on ne
-  // départage par vent/direction qu'entre candidats déjà propres.
   let bestClean: RouteCandidate | null = null;
   let bestCleanPreference = -Infinity;
   let bestCleanWindScore = 0;
@@ -309,26 +314,118 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const best = bestClean ?? bestDirty;
-  const chosenUTurnM = bestClean ? bestCleanUTurnM : bestDirtyUTurnM;
+  if (bestClean) {
+    return {
+      best: bestClean,
+      isClean: true,
+      windScore: bestCleanWindScore,
+      directionScore: bestCleanDirectionScore,
+      uturnPenaltyM: bestCleanUTurnM,
+      lastError,
+    };
+  }
 
-  if (!best) {
+  return {
+    best: bestDirty,
+    isClean: false,
+    windScore: 0,
+    directionScore: 0,
+    uturnPenaltyM: bestDirtyUTurnM,
+    lastError,
+  };
+}
+
+export async function POST(req: NextRequest) {
+  const apiKey = process.env.ORS_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: 'ORS_API_KEY manquante. Ajoute ta clé OpenRouteService dans .env.local (voir README).' },
+      { status: 500 }
+    );
+  }
+
+  const body = (await req.json()) as RequestBody;
+  const { lat, lng, targetDistanceKm, maxElevationM, profile, durationHours, flatSpeedKmh } = body;
+  const wantsStrictSurface = body.avoidRoughSurfaces === true;
+  const wantsWindOptimization = body.optimizeForWind === true;
+  const hasDirection = Number.isFinite(body.aimLat) && Number.isFinite(body.aimLng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) {
+    return NextResponse.json({ error: 'Paramètres invalides.' }, { status: 400 });
+  }
+
+  const wind = wantsWindOptimization ? await fetchWind(lat, lng) : null;
+  const desiredBearing = hasDirection ? bearingDegrees(lat, lng, body.aimLat as number, body.aimLng as number) : null;
+
+  let result = await searchCandidates(
+    apiKey,
+    profile,
+    lat,
+    lng,
+    targetDistanceKm,
+    maxElevationM,
+    wantsStrictSurface,
+    wind,
+    desiredBearing
+  );
+  let refinedForTerrain = false;
+
+  // "D+ maximum" est un plafond, pas un D+ garanti : l'estimation initiale
+  // de distance suppose pourtant, faute de mieux, qu'on va grimper tout ce
+  // plafond (voir lib/speedModel.ts). Si le terrain réel autour du départ
+  // s'avère bien moins pentu, on a inutilement raccourci la distance pour
+  // rien — on recalcule alors une distance plus généreuse à partir du D+
+  // réellement trouvé, et on retente une génération avec cette distance.
+  if (
+    result.isClean &&
+    result.best &&
+    Number.isFinite(durationHours) &&
+    Number.isFinite(flatSpeedKmh) &&
+    result.best.ascentM < maxElevationM * REFINEMENT_ASCENT_RATIO
+  ) {
+    const refinedDistanceKm = estimateRideDistanceKm(
+      { flatSpeedKmh, secondsPerMeterClimbed: DEFAULT_ATHLETE_PROFILE.secondsPerMeterClimbed },
+      durationHours,
+      result.best.ascentM
+    );
+
+    if (refinedDistanceKm > targetDistanceKm * REFINEMENT_MIN_GAIN_RATIO) {
+      const refined = await searchCandidates(
+        apiKey,
+        profile,
+        lat,
+        lng,
+        refinedDistanceKm,
+        maxElevationM,
+        wantsStrictSurface,
+        wind,
+        desiredBearing
+      );
+      if (refined.isClean && refined.best && refined.best.distanceKm >= result.best.distanceKm) {
+        result = refined;
+        refinedForTerrain = true;
+      }
+    }
+  }
+
+  if (!result.best) {
     return NextResponse.json(
       {
         error: `Impossible de générer un itinéraire ici. Essaie un autre point de départ ou une autre distance.${
-          lastError ? ` (${lastError})` : ''
+          result.lastError ? ` (${result.lastError})` : ''
         }`,
       },
       { status: 502 }
     );
   }
 
-  const result: GeneratedRoute = {
-    ...best,
+  const response: GeneratedRoute = {
+    ...result.best,
     wind,
-    windScore: bestClean ? bestCleanWindScore : 0,
-    directionScore: desiredBearing !== null ? (bestClean ? bestCleanDirectionScore : 0) : null,
-    uturnPenaltyM: Math.round(chosenUTurnM),
+    windScore: result.windScore,
+    directionScore: desiredBearing !== null ? result.directionScore : null,
+    uturnPenaltyM: Math.round(result.uturnPenaltyM),
+    refinedForTerrain,
   };
-  return NextResponse.json(result);
+  return NextResponse.json(response);
 }

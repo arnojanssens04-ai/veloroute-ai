@@ -97,6 +97,8 @@ export default function Home() {
           lng: start.lng,
           targetDistanceKm: estimatedDistanceKm,
           maxElevationM,
+          durationHours: durationMin / 60,
+          flatSpeedKmh: speedKmh,
           profile,
           avoidRoughSurfaces,
           optimizeForWind,
@@ -191,6 +193,12 @@ export default function Home() {
                 <div className="font-semibold">{route.ascentM} m</div>
               </div>
             </div>
+            {route.refinedForTerrain && (
+              <p className="text-sm text-emerald-700">
+                ↗️ Terrain moins pentu que le D+ maximum autorisé : distance recalculée à la hausse pour mieux
+                remplir ta durée.
+              </p>
+            )}
             {avoidRoughSurfaces && (
               <p className="text-sm text-slate-600">
                 {route.strictSurfaceApplied
