@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { CyclingProfile, GeneratedRoute } from '@/lib/types';
+import type { CyclingProfile, GeneratedRoute, RoutePoint, WindInfo } from '@/lib/types';
 
 const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions';
 const MAX_ATTEMPTS = 5;
+const WIND_WEIGHT = 2;
 
 interface RequestBody {
   lat: number;
@@ -11,7 +12,10 @@ interface RequestBody {
   maxElevationM: number;
   profile: CyclingProfile;
   avoidRoughSurfaces?: boolean;
+  optimizeForWind?: boolean;
 }
+
+type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore'>;
 
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
@@ -25,6 +29,71 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * c;
 }
 
+function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lng2 - lng1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  const θ = (Math.atan2(y, x) * 180) / Math.PI;
+  return (θ + 360) % 360;
+}
+
+async function fetchWind(lat: number, lng: number): Promise<WindInfo | null> {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const speedKmh = data?.current?.wind_speed_10m;
+    const directionFromDeg = data?.current?.wind_direction_10m;
+    if (typeof speedKmh !== 'number' || typeof directionFromDeg !== 'number') return null;
+    return { speedKmh, directionFromDeg };
+  } catch {
+    return null;
+  }
+}
+
+// Score une boucle déjà générée par rapport au vent : plus il est élevé,
+// plus la première moitié du parcours (en distance) est face au vent et la
+// seconde moitié dans le dos. cos(cap - direction du vent) vaut +1 quand on
+// roule droit dans le vent (vent de face) et -1 quand on l'a dans le dos.
+// ORS ne permet pas d'imposer un cap de départ : on ne peut donc que générer
+// plusieurs boucles candidates (comme pour le D+) et choisir la plus
+// favorable parmi elles, pas garantir un vent de face parfait.
+function computeWindScore(points: RoutePoint[], windDirectionFromDeg: number): number {
+  const totalKm = points[points.length - 1]?.distanceKm ?? 0;
+  if (totalKm <= 0) return 0;
+  const halfKm = totalKm / 2;
+
+  let firstWeighted = 0;
+  let firstDist = 0;
+  let secondWeighted = 0;
+  let secondDist = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const segmentKm = curr.distanceKm - prev.distanceKm;
+    if (segmentKm <= 0) continue;
+    const bearing = bearingDegrees(prev.lat, prev.lng, curr.lat, curr.lng);
+    const headwindFactor = Math.cos(((bearing - windDirectionFromDeg) * Math.PI) / 180);
+
+    if (curr.distanceKm <= halfKm) {
+      firstWeighted += headwindFactor * segmentKm;
+      firstDist += segmentKm;
+    } else {
+      secondWeighted += headwindFactor * segmentKm;
+      secondDist += segmentKm;
+    }
+  }
+
+  const avgFirst = firstDist > 0 ? firstWeighted / firstDist : 0;
+  const avgSecond = secondDist > 0 ? secondWeighted / secondDist : 0;
+  return avgFirst - avgSecond;
+}
+
 async function fetchRoundTrip(
   apiKey: string,
   profile: CyclingProfile,
@@ -34,7 +103,7 @@ async function fetchRoundTrip(
   seed: number,
   attempt: number,
   avoidRoughSurfaces: boolean
-): Promise<GeneratedRoute> {
+): Promise<RouteCandidate> {
   const points = Math.min(10, Math.max(3, Math.round(distanceKm / 8)));
 
   const options: Record<string, unknown> = {
@@ -88,7 +157,7 @@ async function fetchRoundTrip(
   let distanceM = 0;
   let ascentM = 0;
   let descentM = 0;
-  const points_: GeneratedRoute['points'] = raw.map((p, i) => {
+  const points_: RoutePoint[] = raw.map((p, i) => {
     if (i > 0) {
       const prev = raw[i - 1];
       distanceM += haversineMeters(prev.lat, prev.lng, p.lat, p.lng);
@@ -121,20 +190,24 @@ export async function POST(req: NextRequest) {
   const body = (await req.json()) as RequestBody;
   const { lat, lng, targetDistanceKm, maxElevationM, profile } = body;
   const wantsStrictSurface = body.avoidRoughSurfaces === true;
+  const wantsWindOptimization = body.optimizeForWind === true;
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) {
     return NextResponse.json({ error: 'Paramètres invalides.' }, { status: 400 });
   }
 
-  let best: GeneratedRoute | null = null;
+  const wind = wantsWindOptimization ? await fetchWind(lat, lng) : null;
+
+  let best: RouteCandidate | null = null;
   let bestScore = Infinity;
+  let bestWindScore = -Infinity;
   let lastError = '';
   let strictSurfaceRejected = false;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const seed = Math.floor(Math.random() * 1_000_000);
     const useStrictSurface = wantsStrictSurface && !strictSurfaceRejected;
-    let candidate: GeneratedRoute;
+    let candidate: RouteCandidate;
     try {
       candidate = await fetchRoundTrip(apiKey, profile, lat, lng, targetDistanceKm, seed, attempt, useStrictSurface);
     } catch (e) {
@@ -149,14 +222,20 @@ export async function POST(req: NextRequest) {
     }
 
     const over = candidate.ascentM - maxElevationM;
-    const score = over > 0 ? over * 3 : -over;
+    const elevationScore = over > 0 ? over * 3 : -over;
+    const windScore = wind ? computeWindScore(candidate.points, wind.directionFromDeg) : 0;
+    const combinedScore = elevationScore - windScore * WIND_WEIGHT;
 
-    if (score < bestScore) {
+    if (combinedScore < bestScore) {
       best = candidate;
-      bestScore = score;
+      bestScore = combinedScore;
+      bestWindScore = windScore;
     }
 
-    if (candidate.ascentM <= maxElevationM) break;
+    // Sans optimisation vent, un premier candidat qui respecte le D+ suffit.
+    // Avec optimisation vent, il faut comparer plusieurs candidats avant de
+    // choisir, donc pas d'arrêt anticipé.
+    if (!wind && candidate.ascentM <= maxElevationM) break;
   }
 
   if (!best) {
@@ -170,5 +249,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json(best);
+  const result: GeneratedRoute = { ...best, wind, windScore: bestWindScore === -Infinity ? 0 : bestWindScore };
+  return NextResponse.json(result);
 }

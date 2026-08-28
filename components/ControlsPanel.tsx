@@ -11,6 +11,8 @@ interface ControlsPanelProps {
   onProfileChange: (v: CyclingProfile) => void;
   avoidRoughSurfaces: boolean;
   onAvoidRoughSurfacesChange: (v: boolean) => void;
+  optimizeForWind: boolean;
+  onOptimizeForWindChange: (v: boolean) => void;
   estimatedDistanceKm: number;
   adjustedSpeedKmh: number;
   onGenerate: () => void;
@@ -40,6 +42,8 @@ export default function ControlsPanel(props: ControlsPanelProps) {
     onProfileChange,
     avoidRoughSurfaces,
     onAvoidRoughSurfacesChange,
+    optimizeForWind,
+    onOptimizeForWindChange,
     estimatedDistanceKm,
     adjustedSpeedKmh,
     onGenerate,
@@ -119,6 +123,21 @@ export default function ControlsPanel(props: ControlsPanelProps) {
           Éviter pavés et chemins non asphaltés
           <span className="block text-sm text-slate-600">
             Best-effort : si aucune boucle asphaltée n&apos;est trouvée, on repasse automatiquement sans ce filtre.
+          </span>
+        </span>
+      </label>
+
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={optimizeForWind}
+          onChange={(e) => onOptimizeForWindChange(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>
+          Optimiser pour le vent (face au vent à l&apos;aller, dans le dos au retour)
+          <span className="block text-sm text-slate-600">
+            Expérimental : choisit la meilleure orientation parmi plusieurs boucles générées, sans garantie parfaite.
           </span>
         </span>
       </label>

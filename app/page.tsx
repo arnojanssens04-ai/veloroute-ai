@@ -14,6 +14,18 @@ const RouteMap = dynamic(() => import('@/components/RouteMap'), { ssr: false });
 
 const FALLBACK_START = { lat: 48.8566, lng: 2.3522 };
 
+const COMPASS_LABELS = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+
+function compassLabel(deg: number): string {
+  return COMPASS_LABELS[Math.round(deg / 45) % 8];
+}
+
+function windQualityLabel(windScore: number): string {
+  if (windScore > 0.15) return 'orientation favorable (face au vent à l’aller, dans le dos au retour)';
+  if (windScore < -0.15) return 'orientation défavorable (dans le dos à l’aller, de face au retour)';
+  return 'orientation neutre par rapport au vent';
+}
+
 export default function Home() {
   const [start, setStart] = useState<{ lat: number; lng: number } | null>(null);
   const [durationMin, setDurationMin] = useState(90);
@@ -21,6 +33,7 @@ export default function Home() {
   const [speedKmh, setSpeedKmh] = useState(DEFAULT_ATHLETE_PROFILE.flatSpeedKmh);
   const [profile, setProfile] = useState<CyclingProfile>('cycling-regular');
   const [avoidRoughSurfaces, setAvoidRoughSurfaces] = useState(false);
+  const [optimizeForWind, setOptimizeForWind] = useState(false);
   const [route, setRoute] = useState<GeneratedRoute | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +75,7 @@ export default function Home() {
           maxElevationM,
           profile,
           avoidRoughSurfaces,
+          optimizeForWind,
         }),
       });
       const data = await res.json();
@@ -103,6 +117,8 @@ export default function Home() {
           onProfileChange={setProfile}
           avoidRoughSurfaces={avoidRoughSurfaces}
           onAvoidRoughSurfacesChange={setAvoidRoughSurfaces}
+          optimizeForWind={optimizeForWind}
+          onOptimizeForWindChange={setOptimizeForWind}
           estimatedDistanceKm={estimatedDistanceKm}
           adjustedSpeedKmh={adjustedSpeedKmh}
           onGenerate={generate}
@@ -128,6 +144,15 @@ export default function Home() {
                 {route.strictSurfaceApplied
                   ? '✓ Filtre revêtement asphalté appliqué.'
                   : "⚠️ Aucune boucle asphaltée trouvée ici : filtre revêtement ignoré pour ce résultat."}
+              </p>
+            )}
+            {optimizeForWind && (
+              <p className="text-sm text-slate-600">
+                {route.wind
+                  ? `💨 Vent : ${route.wind.speedKmh.toFixed(0)} km/h du ${compassLabel(
+                      route.wind.directionFromDeg
+                    )} — ${windQualityLabel(route.windScore)}.`
+                  : "⚠️ Données de vent indisponibles pour ce résultat : orientation non optimisée."}
               </p>
             )}
             <ElevationProfile points={route.points} />

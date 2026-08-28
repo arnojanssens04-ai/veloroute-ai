@@ -93,6 +93,30 @@ de recherche d'adresse (`/api/geocode`, proxy vers l'API Geocoding
 d'OpenRouteService — utilise la même clé `ORS_API_KEY`) permet de saisir une
 adresse ou une ville directement.
 
+## Optimisation vent (expérimental)
+
+La case « Optimiser pour le vent » interroge [Open-Meteo](https://open-meteo.com/)
+(gratuit, sans clé) pour connaître la vitesse et la direction du vent
+actuelles au point de départ, puis choisit — parmi les boucles déjà générées
+pour respecter le D+ (jusqu'à 5 variantes par seed) — celle dont la première
+moitié (en distance) est la plus face au vent et la seconde moitié la plus
+favorable (vent de dos).
+
+**Comment ça marche techniquement** : pour chaque segment du tracé, on
+calcule le cap parcouru et son alignement avec la direction du vent
+(`cos(cap − direction du vent)`, +1 = vent de face, -1 = vent de dos),
+pondéré par la distance du segment. Le résultat affiché après génération
+(`orientation favorable / neutre / défavorable`) reflète ce score pour la
+boucle réellement choisie — ce n'est pas toujours favorable, faute de mieux
+parmi les variantes testées.
+
+**Limites** : l'API de routage ne permet pas d'imposer un cap de départ, on
+ne fait donc que choisir la moins mauvaise option parmi des boucles générées
+pour d'autres critères (distance, D+) — pas une vraie optimisation dédiée.
+Sur une boucle très arrondie (peu allongée), l'effet est faible par nature.
+Si Open-Meteo est injoignable, la génération continue normalement sans
+optimisation vent (repli silencieux, signalé dans l'interface).
+
 ## Envoyer le parcours vers Garmin Connect
 
 Le bouton « Télécharger le GPX » génère un fichier `.gpx` standard

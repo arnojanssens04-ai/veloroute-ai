@@ -13,6 +13,11 @@ export interface RoutePoint {
   distanceKm: number;
 }
 
+export interface WindInfo {
+  speedKmh: number;
+  directionFromDeg: number;
+}
+
 export interface GeneratedRoute {
   points: RoutePoint[];
   distanceKm: number;
@@ -20,6 +25,8 @@ export interface GeneratedRoute {
   descentM: number;
   attempts: number;
   strictSurfaceApplied: boolean;
+  wind: WindInfo | null;
+  windScore: number;
 }
 
 export interface GenerateRouteRequest {
@@ -29,6 +36,7 @@ export interface GenerateRouteRequest {
   maxElevationM: number;
   profile: CyclingProfile;
   avoidRoughSurfaces: boolean;
+  optimizeForWind: boolean;
 }
 
 export interface GeocodeResult {
