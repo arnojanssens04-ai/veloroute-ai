@@ -7,7 +7,7 @@ import ElevationProfile from '@/components/ElevationProfile';
 import StartPointSearch from '@/components/StartPointSearch';
 import { ATHLETE_PROFILE_SOURCE, DEFAULT_ATHLETE_PROFILE } from '@/lib/athleteProfile';
 import { downloadGpx } from '@/lib/gpx';
-import { estimateRideDistanceKm, estimateSpeedKmh } from '@/lib/speedModel';
+import { averageSpeedKmh, estimateRideDistanceKm } from '@/lib/speedModel';
 import type { CyclingProfile, GeneratedRoute } from '@/lib/types';
 
 const RouteMap = dynamic(() => import('@/components/RouteMap'), { ssr: false });
@@ -56,9 +56,8 @@ export default function Home() {
   }, [speedKmh, durationMin, maxElevationM]);
 
   const adjustedSpeedKmh = useMemo(() => {
-    const athleteProfile = { ...DEFAULT_ATHLETE_PROFILE, flatSpeedKmh: speedKmh };
-    return estimateSpeedKmh(athleteProfile, maxElevationM, estimatedDistanceKm);
-  }, [speedKmh, maxElevationM, estimatedDistanceKm]);
+    return averageSpeedKmh(estimatedDistanceKm, durationMin / 60);
+  }, [estimatedDistanceKm, durationMin]);
 
   async function generate() {
     if (!start) return;

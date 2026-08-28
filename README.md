@@ -9,8 +9,10 @@ Génère une boucle vélo sur mesure à partir d'une **durée** et d'un **D+ max
 1. Tu choisis la durée de sortie souhaitée et le dénivelé positif max que tu
    veux t'autoriser.
 2. L'appli convertit ça en distance cible via un modèle de vitesse
-   personnalisé (`lib/speedModel.ts`) : plus le D+/km demandé est élevé, plus
-   la vitesse estimée baisse.
+   personnalisé (`lib/speedModel.ts`) : le D+ demandé coûte un temps à peu
+   près fixe (pas une vitesse réduite étalée sur toute la distance), ce qui
+   reflète le fait qu'un dénivelé concentré sur une courte section ne
+   ralentit que cette section.
 3. Elle appelle [OpenRouteService](https://openrouteservice.org/) (mode
    *round trip*) pour générer une boucle réelle sur route/piste cyclable
    depuis ton point de départ, en testant plusieurs variantes pour se
@@ -22,11 +24,26 @@ Génère une boucle vélo sur mesure à partir d'une **durée** et d'un **D+ max
 
 Les valeurs par défaut (`lib/athleteProfile.ts`) viennent d'une régression
 sur 18 sorties vélo extérieures issues de l'historique Strava réel de
-l'utilisateur (~344 km cumulés, vitesse moyenne pondérée ~21,4 km/h) :
-vitesse à plat ≈ 24,5 km/h, avec ≈ -0,5 km/h par mètre de D+/km. Ce sont de
+l'utilisateur (~344 km cumulés) :
+
+- **Vitesse à plat** ≈ 24,5 km/h — moyenne pondérée par la distance.
+- **Coût du D+** ≈ 3,36 secondes par mètre grimpé (soit environ 22 min pour
+  400 m de D+), **indépendamment de la distance sur laquelle ce D+ est
+  réparti**. Obtenu en régressant le « temps excédentaire » de chaque sortie
+  (temps réel − distance/vitesse à plat) contre son D+ total.
+
+Distance cible = vitesse à plat × (durée − temps de D+ estimé). Ce sont de
 simples valeurs de départ modifiables directement dans l'interface (champ
 « Vitesse moyenne estimée ») — l'appli ne se reconnecte pas à Strava en
 direct pour l'instant.
+
+**Limite assumée** : le modèle ne connaît que le D+ *total* demandé, pas sa
+répartition réelle (une bosse de 20 secondes à 3 % coûte beaucoup moins
+qu'une côte de 10 minutes à 8 %, à D+ cumulé égal) — cette information
+n'existe pas encore à l'étape du calcul, puisque le tracé réel n'est généré
+qu'après. Une fois la boucle générée, la distance et le D+ **réels** sont
+toujours affichés, donc l'écart éventuel reste visible et tu peux régénérer
+ou ajuster manuellement la vitesse si besoin.
 
 ## Prérequis : une clé OpenRouteService (gratuite)
 

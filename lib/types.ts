@@ -2,8 +2,7 @@ export type CyclingProfile = 'cycling-road' | 'cycling-regular' | 'cycling-mount
 
 export interface AthleteSpeedProfile {
   flatSpeedKmh: number;
-  elevationPenaltyKmhPerMkm: number;
-  minSpeedKmh: number;
+  secondsPerMeterClimbed: number;
 }
 
 export interface RoutePoint {
