@@ -50,6 +50,7 @@ async function fetchRoundTrip(
           points,
           seed,
         },
+        avoid_features: ['highways'],
       },
     }),
   });

@@ -18,10 +18,12 @@ interface ControlsPanelProps {
 }
 
 const PROFILE_LABELS: Record<CyclingProfile, string> = {
-  'cycling-road': 'Vélo de route',
-  'cycling-regular': 'Vélo / VTC polyvalent',
-  'cycling-mountain': 'VTT',
+  'cycling-regular': 'Polyvalent (pistes cyclables privilégiées)',
+  'cycling-road': 'Vélo de route (priorité vitesse/directness)',
+  'cycling-mountain': 'VTT (chemins et sentiers)',
 };
+
+const PROFILE_ORDER: CyclingProfile[] = ['cycling-regular', 'cycling-road', 'cycling-mountain'];
 
 export default function ControlsPanel(props: ControlsPanelProps) {
   const {
@@ -87,12 +89,17 @@ export default function ControlsPanel(props: ControlsPanelProps) {
           onChange={(e) => onProfileChange(e.target.value as CyclingProfile)}
           className="w-full border border-slate-300 rounded-lg px-2 py-1.5"
         >
-          {(Object.keys(PROFILE_LABELS) as CyclingProfile[]).map((key) => (
+          {PROFILE_ORDER.map((key) => (
             <option key={key} value={key}>
               {PROFILE_LABELS[key]}
             </option>
           ))}
         </select>
+        <p className="text-xs text-slate-400 mt-1">
+          Les grands axes routiers sont toujours évités. « Polyvalent » privilégie en plus les pistes et bandes
+          cyclables quand elles existent ; « Vélo de route » optimise l&apos;itinéraire le plus direct sur route
+          goudronnée, quitte à partager la chaussée.
+        </p>
       </div>
 
       <div>

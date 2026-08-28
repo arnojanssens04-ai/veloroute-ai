@@ -18,7 +18,7 @@ export default function Home() {
   const [durationMin, setDurationMin] = useState(90);
   const [maxElevationM, setMaxElevationM] = useState(400);
   const [speedKmh, setSpeedKmh] = useState(DEFAULT_ATHLETE_PROFILE.flatSpeedKmh);
-  const [profile, setProfile] = useState<CyclingProfile>('cycling-road');
+  const [profile, setProfile] = useState<CyclingProfile>('cycling-regular');
   const [route, setRoute] = useState<GeneratedRoute | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -61,6 +61,25 @@ clique sur « Générer mon parcours ».
 4. Déploie. Aucune autre configuration n'est nécessaire (le projet est un
    Next.js standard).
 
+## Préférence pour les infrastructures cyclables
+
+Toutes les boucles évitent les grands axes routiers (`avoid_features:
+highways`). Le profil « Polyvalent » (`cycling-regular`) va plus loin : c'est
+le profil qu'OpenRouteService construit spécifiquement pour privilégier les
+pistes/bandes cyclables et les routes calmes quand une alternative
+raisonnable existe, au prix d'un tracé parfois moins direct. Le profil
+« Vélo de route » (`cycling-road`) reste optimisé pour l'itinéraire le plus
+direct sur route goudronnée, quitte à partager la chaussée avec les
+voitures.
+
+**Limite technique connue** : l'API publique d'OpenRouteService ne permet
+pas d'imposer une hiérarchie stricte du type « pistes 100% séparées d'abord,
+puis bandes cyclables, puis route partagée en dernier recours » — c'est une
+préférence globale du profil, pas un filtre par type d'infrastructure. Pour
+un contrôle aussi fin, il faudrait un moteur différent (ex. GraphHopper avec
+ses `custom_model`, ou un ORS auto-hébergé avec un profil sur mesure), ce
+qui demande une tout autre intégration.
+
 ## Envoyer le parcours vers Garmin Connect
 
 Le bouton « Télécharger le GPX » génère un fichier `.gpx` standard
