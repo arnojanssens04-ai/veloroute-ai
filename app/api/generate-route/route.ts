@@ -12,8 +12,10 @@ const DIRECTION_FRACTION = 0.3;
 const UTURN_TURN_THRESHOLD_DEG = 150;
 const UTURN_MIN_SEGMENT_M = 5;
 const UTURN_TOLERANCE_M = 150;
+const DISTANCE_TOLERANCE_RATIO = 0.12;
+const DISTANCE_TOLERANCE_MIN_KM = 2;
 const REFINEMENT_ASCENT_RATIO = 0.6;
-const REFINEMENT_MIN_GAIN_RATIO = 1.1;
+const REFINEMENT_MIN_CHANGE_RATIO = 0.05;
 
 interface RequestBody {
   lat: number;
@@ -29,7 +31,10 @@ interface RequestBody {
   aimLng?: number;
 }
 
-type RouteCandidate = Omit<GeneratedRoute, 'wind' | 'windScore' | 'directionScore' | 'uturnPenaltyM' | 'refinedForTerrain'>;
+type RouteCandidate = Omit<
+  GeneratedRoute,
+  'wind' | 'windScore' | 'directionScore' | 'uturnPenaltyM' | 'refinedForTerrain' | 'refinedForDistance'
+>;
 
 interface SearchResult {
   best: RouteCandidate | null;
@@ -236,25 +241,37 @@ async function fetchRoundTrip(
 }
 
 // Génère jusqu'à MAX_ATTEMPTS boucles pour une distance cible donnée et
-// classe les résultats à paliers plutôt qu'avec un score unique : le D+ et
-// les aller-retours sont des défauts de qualité mesurés en mètres (échelle
-// commune), tandis que vent/direction sont de simples préférences (échelle
-// -1..1). Les additionner dans un seul score mélangeait des grandeurs
-// incomparables et le D+ finissait par écraser complètement la préférence
-// de direction. On filtre d'abord sur la qualité (D+ + demi-tours), et on
-// ne départage par vent/direction qu'entre candidats déjà propres.
+// classe les résultats à paliers plutôt qu'avec un score unique : le D+, les
+// aller-retours et l'écart de distance sont des défauts de qualité mesurés
+// en mètres (échelle commune), tandis que vent/direction sont de simples
+// préférences (échelle -1..1). Les additionner dans un seul score mélangeait
+// des grandeurs incomparables et le D+ finissait par écraser complètement
+// la préférence de direction. On filtre d'abord sur la qualité (D+ +
+// demi-tours + distance), et on ne départage par vent/direction qu'entre
+// candidats déjà propres. L'écart de distance compte ici car l'algorithme
+// round_trip d'ORS est approximatif : il peut renvoyer une boucle
+// sensiblement plus longue ou plus courte que la longueur demandée.
 async function searchCandidates(
   apiKey: string,
   profile: CyclingProfile,
   lat: number,
   lng: number,
-  targetDistanceKm: number,
+  requestDistanceKm: number,
   maxElevationM: number,
   wantsStrictSurface: boolean,
   wind: WindInfo | null,
-  desiredBearing: number | null
+  desiredBearing: number | null,
+  // Distance à laquelle juger la "propreté" d'un candidat. Distincte de
+  // requestDistanceKm (ce qu'on envoie réellement à ORS) : la correction de
+  // biais demande volontairement une longueur différente de ce qu'on vise
+  // vraiment, pour compenser l'imprécision de round_trip — comparer un
+  // résultat à la longueur envoyée plutôt qu'à l'objectif réel aurait
+  // classé "sale" un résultat qui tombe pourtant pile sur la cible.
+  evaluationTargetKm: number = requestDistanceKm
 ): Promise<SearchResult> {
   const elevationToleranceM = Math.max(30, maxElevationM * 0.15);
+  const distanceToleranceM =
+    Math.max(DISTANCE_TOLERANCE_MIN_KM, evaluationTargetKm * DISTANCE_TOLERANCE_RATIO) * 1000;
 
   let bestClean: RouteCandidate | null = null;
   let bestCleanPreference = -Infinity;
@@ -274,7 +291,7 @@ async function searchCandidates(
     const useStrictSurface = wantsStrictSurface && !strictSurfaceRejected;
     let candidate: RouteCandidate;
     try {
-      candidate = await fetchRoundTrip(apiKey, profile, lat, lng, targetDistanceKm, seed, attempt, useStrictSurface);
+      candidate = await fetchRoundTrip(apiKey, profile, lat, lng, requestDistanceKm, seed, attempt, useStrictSurface);
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
       // Si ORS rejette le filtre de revêtement (paramètre non supporté sur ce
@@ -288,7 +305,8 @@ async function searchCandidates(
 
     const elevationOverM = Math.max(0, candidate.ascentM - maxElevationM);
     const uturnM = computeUTurnPenaltyMeters(candidate.points);
-    const isClean = elevationOverM <= elevationToleranceM && uturnM <= UTURN_TOLERANCE_M;
+    const distanceErrorM = Math.abs(candidate.distanceKm - evaluationTargetKm) * 1000;
+    const isClean = elevationOverM <= elevationToleranceM && uturnM <= UTURN_TOLERANCE_M && distanceErrorM <= distanceToleranceM;
 
     if (isClean) {
       const windScore = wind ? computeWindScore(candidate.points, wind.directionFromDeg) : 0;
@@ -305,7 +323,7 @@ async function searchCandidates(
       // propre suffit. Sinon il faut en comparer plusieurs.
       if (!wind && desiredBearing === null) break;
     } else {
-      const defect = elevationOverM + uturnM;
+      const defect = elevationOverM + uturnM + distanceErrorM;
       if (defect < bestDirtyDefect) {
         bestDirty = candidate;
         bestDirtyDefect = defect;
@@ -369,41 +387,64 @@ export async function POST(req: NextRequest) {
     desiredBearing
   );
   let refinedForTerrain = false;
+  let refinedForDistance = false;
 
-  // "D+ maximum" est un plafond, pas un D+ garanti : l'estimation initiale
-  // de distance suppose pourtant, faute de mieux, qu'on va grimper tout ce
-  // plafond (voir lib/speedModel.ts). Si le terrain réel autour du départ
-  // s'avère bien moins pentu, on a inutilement raccourci la distance pour
-  // rien — on recalcule alors une distance plus généreuse à partir du D+
-  // réellement trouvé, et on retente une génération avec cette distance.
-  if (
-    result.isClean &&
-    result.best &&
-    Number.isFinite(durationHours) &&
-    Number.isFinite(flatSpeedKmh) &&
-    result.best.ascentM < maxElevationM * REFINEMENT_ASCENT_RATIO
-  ) {
-    const refinedDistanceKm = estimateRideDistanceKm(
-      { flatSpeedKmh, secondsPerMeterClimbed: DEFAULT_ATHLETE_PROFILE.secondsPerMeterClimbed },
-      durationHours,
-      result.best.ascentM
-    );
+  if (result.best) {
+    // Volontairement pas conditionné à result.isClean : un dépassement de
+    // distance (nouveau critère de "propreté") est justement l'un des cas
+    // que cette correction doit rattraper, pas un cas à ignorer parce que
+    // la 1ère tentative est déjà classée "sale" à cause de lui.
+    //
+    // "D+ maximum" est un plafond, pas un D+ garanti : l'estimation initiale
+    // de distance suppose pourtant, faute de mieux, qu'on va grimper tout ce
+    // plafond (voir lib/speedModel.ts). Si le terrain réel autour du départ
+    // s'avère bien moins pentu, on a inutilement raccourci la distance pour
+    // rien — on recalcule alors une distance plus généreuse à partir du D+
+    // réellement trouvé.
+    let desiredDistanceKm = targetDistanceKm;
+    if (Number.isFinite(durationHours) && Number.isFinite(flatSpeedKmh) && result.best.ascentM < maxElevationM * REFINEMENT_ASCENT_RATIO) {
+      desiredDistanceKm = estimateRideDistanceKm(
+        { flatSpeedKmh, secondsPerMeterClimbed: DEFAULT_ATHLETE_PROFILE.secondsPerMeterClimbed },
+        durationHours,
+        result.best.ascentM
+      );
+      if (Math.abs(desiredDistanceKm - targetDistanceKm) > targetDistanceKm * REFINEMENT_MIN_CHANGE_RATIO) {
+        refinedForTerrain = true;
+      }
+    }
 
-    if (refinedDistanceKm > targetDistanceKm * REFINEMENT_MIN_GAIN_RATIO) {
+    // L'algorithme round_trip d'ORS est approximatif : la boucle obtenue
+    // peut être sensiblement plus longue ou plus courte que la longueur
+    // demandée. On mesure cet écart sur la première tentative et on corrige
+    // la longueur demandée en conséquence pour la seconde, en visant
+    // toujours desiredDistanceKm (qui intègre déjà la correction terrain
+    // ci-dessus s'il y en a une).
+    const bias = result.best.distanceKm > 0.1 ? result.best.distanceKm / targetDistanceKm : 1;
+    const correctedRequestKm = desiredDistanceKm / bias;
+    if (bias !== 1 && Math.abs(correctedRequestKm - desiredDistanceKm) > desiredDistanceKm * REFINEMENT_MIN_CHANGE_RATIO) {
+      refinedForDistance = true;
+    }
+
+    if (refinedForTerrain || refinedForDistance) {
       const refined = await searchCandidates(
         apiKey,
         profile,
         lat,
         lng,
-        refinedDistanceKm,
+        correctedRequestKm,
         maxElevationM,
         wantsStrictSurface,
         wind,
-        desiredBearing
+        desiredBearing,
+        desiredDistanceKm
       );
-      if (refined.isClean && refined.best && refined.best.distanceKm >= result.best.distanceKm) {
+      const currentError = Math.abs(result.best.distanceKm - desiredDistanceKm);
+      const refinedError = refined.best ? Math.abs(refined.best.distanceKm - desiredDistanceKm) : Infinity;
+      if (refined.isClean && refined.best && refinedError < currentError) {
         result = refined;
-        refinedForTerrain = true;
+      } else {
+        refinedForTerrain = false;
+        refinedForDistance = false;
       }
     }
   }
@@ -426,6 +467,7 @@ export async function POST(req: NextRequest) {
     directionScore: desiredBearing !== null ? result.directionScore : null,
     uturnPenaltyM: Math.round(result.uturnPenaltyM),
     refinedForTerrain,
+    refinedForDistance,
   };
   return NextResponse.json(response);
 }

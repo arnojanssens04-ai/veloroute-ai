@@ -172,7 +172,8 @@ optimisation vent (repli silencieux, signalé dans l'interface).
 `app/api/generate-route/route.ts` génère jusqu'à 8 boucles candidates et les
 classe en deux tas plutôt qu'un score unique :
 
-1. **Propres** : D+ dans une tolérance raisonnable autour de la cible (15 %,
+1. **Propres** : distance dans une tolérance autour de la cible (12 %,
+   min. 2 km), D+ dans une tolérance raisonnable autour du plafond (15 %,
    min. 30 m) **et** pas d'aller-retour détecté (voir ci-dessous). Le vent et
    la direction souhaitée ne servent à départager que *parmi ce tas* — on ne
    compare jamais un mètre de D+ à un score de vent, ce sont des échelles
@@ -180,8 +181,9 @@ classe en deux tas plutôt qu'un score unique :
    et le D+ écrasait systématiquement la préférence de direction, qui
    n'avait alors aucun effet réel.
 2. **Dégradées** (si aucune boucle propre trouvée) : la moins mauvaise selon
-   D+ dépassé + longueur d'aller-retour, sans tenir compte du vent/direction
-   — la qualité de base prime sur les préférences quand il faut choisir.
+   D+ dépassé + longueur d'aller-retour + écart de distance, sans tenir
+   compte du vent/direction — la qualité de base prime sur les préférences
+   quand il faut choisir.
 
 **Détection des allers-retours** : ORS génère parfois une impasse pour
 ajuster précisément la distance demandée (le tracé remonte une petite rue
@@ -189,6 +191,28 @@ puis fait quasi demi-tour dedans). Un retournement de cap de plus de 150°
 entre deux segments non négligeables (≥5 m, pour ignorer le bruit GPS) est
 détecté comme tel ; la boucle choisie l'indique dans l'interface si elle en
 contient un malgré tout (aucune alternative propre trouvée en 8 essais).
+
+## Correction en 2 passes (terrain + imprécision d'ORS)
+
+Deux raisons distinctes peuvent faire dévier le résultat de ce qui était
+visé, et sont corrigées par le même mécanisme (une 2ᵉ génération avec une
+longueur ajustée) :
+
+- **Terrain plus plat que le D+ maximum** (voir plus haut) : le D+ réellement
+  obtenu sert à recalculer une distance plus généreuse.
+- **Imprécision de round_trip** : l'algorithme d'ORS ne respecte
+  qu'approximativement la longueur demandée (l'écart observé peut dépasser
+  15-20 %). Le biais mesuré sur la 1ʳᵉ tentative (distance obtenue ÷ distance
+  demandée) sert à corriger la longueur envoyée pour la 2ᵉ, en visant
+  toujours la vraie distance recherchée — la propreté de cette 2ᵉ tentative
+  est jugée par rapport à cet objectif réel, pas par rapport à la longueur
+  (volontairement différente) envoyée à ORS pour la compenser.
+
+C'est une correction en une seule passe supplémentaire (pas une boucle
+jusqu'à convergence parfaite) : sur un relief très irrégulier ou un réseau
+routier local qui répond différemment selon la longueur demandée, un écart
+résiduel entre cible et résultat réel peut subsister — toujours affiché
+clairement, jamais caché.
 
 ## Envoyer le parcours vers Garmin Connect
 

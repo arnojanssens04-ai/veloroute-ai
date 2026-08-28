@@ -29,6 +29,7 @@ export interface GeneratedRoute {
   directionScore: number | null;
   uturnPenaltyM: number;
   refinedForTerrain: boolean;
+  refinedForDistance: boolean;
 }
 
 export interface GenerateRouteRequest {

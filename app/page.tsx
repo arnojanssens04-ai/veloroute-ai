@@ -199,6 +199,11 @@ export default function Home() {
                 remplir ta durée.
               </p>
             )}
+            {route.refinedForDistance && (
+              <p className="text-sm text-emerald-700">
+                🎯 Distance corrigée pour compenser l&apos;imprécision d&apos;OpenRouteService sur cette zone.
+              </p>
+            )}
             {avoidRoughSurfaces && (
               <p className="text-sm text-slate-600">
                 {route.strictSurfaceApplied
